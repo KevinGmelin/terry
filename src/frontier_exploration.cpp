@@ -7,8 +7,11 @@
 #include <unordered_set>
 #include <queue>
 #include <chrono>
+#include <eigen3/Eigen/Dense>
+#include <math.h>
 
 using cell_t = size_t;
+using point_t = Eigen::Vector2f;
 
 static bool is_valid_cell(const cell_t &cell, const nav_msgs::MapMetaData &map_meta_data) {
   if (cell < 0) return false;
@@ -17,7 +20,7 @@ static bool is_valid_cell(const cell_t &cell, const nav_msgs::MapMetaData &map_m
   return true;
 }
 
-static auto get_neighbors(const cell_t &cell, const nav_msgs::MapMetaData &map_meta_data) {
+static auto get_4_neighbors(const cell_t &cell, const nav_msgs::MapMetaData &map_meta_data) {
   std::vector<cell_t> neighbors;
   const auto &width = map_meta_data.width;
 
@@ -32,6 +35,29 @@ static auto get_neighbors(const cell_t &cell, const nav_msgs::MapMetaData &map_m
 
   const cell_t bottom_neighbor = cell - width;
   if (is_valid_cell(bottom_neighbor, map_meta_data)) neighbors.push_back(bottom_neighbor);
+
+  return neighbors;
+}
+
+static auto get_8_neighbors(const cell_t &cell, const nav_msgs::MapMetaData &map_meta_data) {
+  std::vector<cell_t> neighbors;
+  const auto &width = map_meta_data.width;
+
+  const cell_t right_neighbor = cell + 1;
+  if (is_valid_cell(right_neighbor, map_meta_data)) neighbors.push_back(right_neighbor);
+
+  const cell_t left_neighbor = cell - 1;
+  if (is_valid_cell(left_neighbor, map_meta_data)) neighbors.push_back(left_neighbor);
+
+  const cell_t top_neighbor = cell + width;
+  if (is_valid_cell(top_neighbor, map_meta_data)) neighbors.push_back(top_neighbor);
+  if (is_valid_cell(top_neighbor - 1, map_meta_data)) neighbors.push_back(top_neighbor - 1);
+  if (is_valid_cell(top_neighbor + 1, map_meta_data)) neighbors.push_back(top_neighbor + 1);
+
+  const cell_t bottom_neighbor = cell - width;
+  if (is_valid_cell(bottom_neighbor, map_meta_data)) neighbors.push_back(bottom_neighbor);
+  if (is_valid_cell(bottom_neighbor - 1, map_meta_data)) neighbors.push_back(bottom_neighbor - 1);
+  if (is_valid_cell(bottom_neighbor + 1, map_meta_data)) neighbors.push_back(bottom_neighbor + 1);
 
   return neighbors;
 }
@@ -53,28 +79,42 @@ static bool is_open(const cell_t &cell, const nav_msgs::OccupancyGrid &map) {
   return cell_value >= 0 and cell_value < 50;
 }
 
+static bool is_closed(const cell_t &cell, const nav_msgs::OccupancyGrid &map) {
+  if (!is_valid_cell(cell, map.info)) {
+    ROS_ERROR("Called is_open() with invalid cell value.");
+    return false;
+  }
+  return map.data[cell] > 50;
+}
+
 static bool is_frontier(const cell_t &cell, const nav_msgs::OccupancyGrid &map) {
   if (!is_unknown(cell, map)) return false;
-  const auto neighbors = get_neighbors(cell, map.info);
+  const auto neighbors = get_4_neighbors(cell, map.info);
   return std::any_of(neighbors.cbegin(),
                      neighbors.cend(),
                      [&map](const cell_t neighbor) { return is_open(neighbor, map); });
 }
 
-static bool has_open_neighbor(const cell_t &cell, const nav_msgs::OccupancyGrid &map) {
-  const auto neighbors = get_neighbors(cell, map.info);
-  return std::any_of(neighbors.cbegin(),
-                     neighbors.cend(),
-                     [&map](const cell_t neighbor) { return is_open(neighbor, map); });
-}
-
-static auto position_to_cell(const float x, const float y, const nav_msgs::MapMetaData &map_meta_data) {
+static auto position_to_cell(const point_t &point, const nav_msgs::MapMetaData &map_meta_data) {
   const auto &width = map_meta_data.width;
   const auto &resolution = map_meta_data.resolution;
   const auto &x_origin = map_meta_data.origin.position.x;
   const auto &y_origin = map_meta_data.origin.position.y;
-  const cell_t cell = size_t(floor((x - x_origin) / resolution) + floor((y - y_origin) / resolution) * width);
+  const cell_t
+      cell = size_t(floor((point(0) - x_origin) / resolution) + floor((point(1) - y_origin) / resolution) * width);
   return cell;
+}
+
+static auto cell_to_position(const cell_t &cell, const nav_msgs::MapMetaData &map_meta_data) {
+  const auto &width = map_meta_data.width;
+  const auto &resolution = map_meta_data.resolution;
+  const auto &x_origin = map_meta_data.origin.position.x;
+  const auto &y_origin = map_meta_data.origin.position.y;
+  const int row = int(cell / width);
+  const int col = cell % width;
+  const float x = x_origin + col * resolution;
+  const float y = y_origin + row * resolution;
+  return point_t{x, y};
 }
 
 static auto traverse_frontier(const cell_t &starting_cell,
@@ -93,7 +133,7 @@ static auto traverse_frontier(const cell_t &starting_cell,
     if (frontier_closed_list.find(cell) != frontier_closed_list.end()) continue;
     if (is_frontier(cell, map)) {
       new_frontier.push_back(cell);
-      for (const auto &neighbor: get_neighbors(cell, map.info)) {
+      for (const auto &neighbor: get_8_neighbors(cell, map.info)) {
         if (frontier_open_list.find(neighbor) != frontier_open_list.end()) continue;
         if (frontier_closed_list.find(neighbor) != frontier_closed_list.end()) continue;
         if (map_closed_list.find(neighbor) != map_closed_list.end()) continue;
@@ -122,17 +162,60 @@ static auto get_frontiers(const cell_t &robot_cell, const nav_msgs::OccupancyGri
     }
     if (is_frontier(cell, map)) {
       frontiers.push_back(traverse_frontier(cell, map, map_closed_list));
-    }
-    for (const auto &neighbor: get_neighbors(cell, map.info)) {
-      if (map_open_list.find(neighbor) != map_open_list.end()) continue;
-      if (map_closed_list.find(neighbor) != map_closed_list.end()) continue;
-      if (!has_open_neighbor(neighbor, map)) continue;
-      cell_queue.push(neighbor);
-      map_open_list.insert(neighbor);
+    } else {
+      for (const auto &neighbor: get_4_neighbors(cell, map.info)) {
+        if (map_open_list.find(neighbor) != map_open_list.end()) continue;
+        if (map_closed_list.find(neighbor) != map_closed_list.end()) continue;
+        if (is_closed(neighbor, map)) continue;
+        cell_queue.push(neighbor);
+        map_open_list.insert(neighbor);
+      }
     }
     map_closed_list.insert(cell);
   }
   return frontiers;
+}
+
+static auto get_frontier_centroid(const std::vector<cell_t> &frontier, const nav_msgs::MapMetaData &map_meta_data) {
+  if (frontier.empty()) {
+    ROS_ERROR("get_frontier_centroid: Frontier is empty.");
+    return point_t{-1, -1};
+  }
+  float x_sum = 0;
+  float y_sum = 0;
+  for (const auto &cell: frontier) {
+    const auto point = cell_to_position(cell, map_meta_data);
+    x_sum += point(0);
+    y_sum += point(1);
+  }
+  const float x = x_sum / frontier.size();
+  const float y = y_sum / frontier.size();
+  return point_t{x, y};
+}
+
+static float distance(point_t point1, point_t point2) {
+  return std::sqrt(std::pow(point1(0) - point2(0), 2) + std::pow(point1(1) - point2(1), 2));
+}
+
+static auto get_nearest_frontier(const cell_t &robot_cell,
+                                 const std::vector<std::vector<cell_t>> &frontiers,
+                                 const nav_msgs::MapMetaData &map_meta_data) {
+  if (frontiers.empty()) {
+    ROS_ERROR("get_nearest_frontier: Frontiers is empty.");
+    return point_t{-1, -1};
+  }
+  const auto robot_point = cell_to_position(robot_cell, map_meta_data);
+  point_t nearest_frontier_centroid;
+  float nearest_distance = std::numeric_limits<float>::max();
+  for (const auto &frontier: frontiers) {
+    const auto frontier_centroid = get_frontier_centroid(frontier, map_meta_data);
+    const float dist_to_centroid = distance(robot_point, nearest_frontier_centroid);
+    if (dist_to_centroid < nearest_distance) {
+      nearest_distance = dist_to_centroid;
+      nearest_frontier_centroid = frontier_centroid;
+    }
+  }
+  return nearest_frontier_centroid;
 }
 
 class FrontierExploration {
@@ -157,7 +240,7 @@ class FrontierExploration {
     map = msg;
     tf::StampedTransform transform;
     try {
-      listener.lookupTransform("base_footprint", "map",
+      listener.lookupTransform("map", "base_footprint",
                                ros::Time(0), transform);
     }
     catch (tf::TransformException ex) {
@@ -165,7 +248,7 @@ class FrontierExploration {
       robot_cell = std::nullopt;
       return;
     }
-    robot_cell = position_to_cell(transform.getOrigin().x(), transform.getOrigin().y(), map->info);
+    robot_cell = position_to_cell({transform.getOrigin().x(), transform.getOrigin().y()}, map->info);
   }
 
   void get_frontiers_callback(const std_msgs::Empty) {
@@ -179,14 +262,16 @@ class FrontierExploration {
     }
     const auto start_time = std::chrono::high_resolution_clock::now();
     const auto frontiers = get_frontiers(robot_cell.value(), map.value());
+    const auto nearest_frontier = get_nearest_frontier(robot_cell.value(), frontiers, map->info);
     const auto end_time = std::chrono::high_resolution_clock::now();
     const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-    ROS_INFO("Getting all frontiers took: %ld milliseconds", duration.count());
-    draw_debug_map(frontiers);
+    ROS_INFO("Getting nearest frontier took: %ld milliseconds", duration.count());
+    const auto nearest_frontier_cell = position_to_cell(nearest_frontier, map->info);
+    draw_debug_map(frontiers, nearest_frontier_cell);
     debug_map_pub.publish(debug_map);
   }
 
-  void draw_debug_map(const std::vector<std::vector<cell_t>> &frontiers) {
+  void draw_debug_map(const std::vector<std::vector<cell_t>> &frontiers, const cell_t &nearest_frontier_cell) {
     debug_map.info = map->info;
     debug_map.header = std_msgs::Header();
     debug_map.header.frame_id = map->header.frame_id;
@@ -198,6 +283,7 @@ class FrontierExploration {
         debug_map.data[cell] = 100;
       }
     }
+    debug_map.data[nearest_frontier_cell] = 0;
   }
 
 };
