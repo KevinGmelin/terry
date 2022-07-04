@@ -330,7 +330,7 @@ class FrontierExploration {
 };
 
 int main(int argc, char **argv) {
-  ros::init(argc, argv, "frontier_exploration");
+  ros::init(argc, argv, "terry_planning");
   FrontierExploration node;
   ros::spin();
   return 0;

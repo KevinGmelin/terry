@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0.2)
-project(frontier_exploration)
+project(terry_planning)
 
 ## Compile as C++11, supported in ROS Kinetic and newer
 add_compile_options(-std=c++17)
@@ -29,7 +29,7 @@ find_package(Eigen3 REQUIRED)
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
         #  INCLUDE_DIRS include
-        #  LIBRARIES frontier_exploration
+        #  LIBRARIES terry_planning
         #  CATKIN_DEPENDS roscpp std_msgs
         #  DEPENDS system_lib
 )
@@ -49,13 +49,13 @@ include_directories(
 ## Declare a C++ executable
 ## With catkin_make all packages are built within a single CMake context
 ## The recommended prefix ensures that target names across packages don't collide
-add_executable(frontier_exploration src/frontier_exploration.cpp)
+add_executable(terry_planning src/frontier_exploration.cpp)
 
 ## Add cmake target dependencies of the executable
 ## same as for the library above
-add_dependencies(frontier_exploration ${catkin_EXPORTED_TARGETS})
+add_dependencies(terry_planning ${catkin_EXPORTED_TARGETS})
 
 ## Specify libraries to link a library or executable target against
-target_link_libraries(frontier_exploration
+target_link_libraries(terry_planning
         ${catkin_LIBRARIES}
         )
