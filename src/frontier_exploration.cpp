@@ -9,9 +9,12 @@
 #include <chrono>
 #include <eigen3/Eigen/Dense>
 #include <math.h>
+#include <move_base_msgs/MoveBaseAction.h>
+#include <actionlib/client/simple_action_client.h>
 
 using cell_t = size_t;
 using point_t = Eigen::Vector2f;
+using MoveBaseClient = actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction>;
 
 static bool is_valid_cell(const cell_t &cell, const nav_msgs::MapMetaData &map_meta_data) {
   if (cell < 0) return false;
@@ -220,10 +223,17 @@ static auto get_nearest_frontier(const cell_t &robot_cell,
 
 class FrontierExploration {
  public:
-  FrontierExploration() {
+  FrontierExploration() :
+      move_base_client("move_base", true) {
     debug_map_pub = nh.advertise<nav_msgs::OccupancyGrid>("debug_map", 1);
     map_sub = nh.subscribe("map", 1, &FrontierExploration::map_callback, this);
     get_frontiers_sub = nh.subscribe("get_frontiers", 1, &FrontierExploration::get_frontiers_callback, this);
+
+    while (!move_base_client.waitForServer(ros::Duration(5.0))) {
+      ROS_INFO("Waiting for the move_base action server to come up");
+    }
+
+    timer = nh.createTimer(ros::Duration(5.0), &FrontierExploration::timer_callback, this);
   }
 
  private:
@@ -235,6 +245,8 @@ class FrontierExploration {
   nav_msgs::OccupancyGrid debug_map;
   std::optional<cell_t> robot_cell;
   tf::TransformListener listener;
+  MoveBaseClient move_base_client;
+  ros::Timer timer;
 
   void map_callback(const nav_msgs::OccupancyGrid &msg) {
     map = msg;
@@ -286,6 +298,35 @@ class FrontierExploration {
     debug_map.data[nearest_frontier_cell] = 0;
   }
 
+  void timer_callback(const ros::TimerEvent &event) {
+    if (!robot_cell.has_value()) {
+      ROS_ERROR("timer_callback: Robot_cell has no value.");
+      return;
+    }
+    if (!map.has_value()) {
+      ROS_ERROR("timer_callback: Map has no value.");
+      return;
+    }
+    const auto start_time = std::chrono::high_resolution_clock::now();
+    const auto frontiers = get_frontiers(robot_cell.value(), map.value());
+    if (frontiers.empty()) {
+      ROS_ERROR("timer_callback: Frontiers is empty.");
+      return;
+    }
+    const auto nearest_frontier = get_nearest_frontier(robot_cell.value(), frontiers, map->info);
+    const auto end_time = std::chrono::high_resolution_clock::now();
+    const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+    ROS_INFO("Getting nearest frontier took: %ld milliseconds", duration.count());
+
+    move_base_msgs::MoveBaseGoal goal;
+    goal.target_pose.header.frame_id = "map";
+    goal.target_pose.header.stamp = ros::Time::now();
+    goal.target_pose.pose.position.x = nearest_frontier(0);
+    goal.target_pose.pose.position.y = nearest_frontier(1);
+    goal.target_pose.pose.orientation.w = 1;
+    ROS_INFO("Sending goal");
+    move_base_client.sendGoal(goal);
+  }
 };
 
 int main(int argc, char **argv) {

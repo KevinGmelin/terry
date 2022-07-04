@@ -12,6 +12,8 @@ find_package(catkin REQUIRED COMPONENTS
         std_msgs
         nav_msgs
         tf
+        move_base_msgs
+        actionlib
         )
 
 find_package(Eigen3 REQUIRED)
